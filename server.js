@@ -1,22 +1,30 @@
 const WebSocket = require('ws');
+const express = require('express');
 
-// Railway define a porta automaticamente
-const PORT = process.env.PORT || 8080;
-const wss = new WebSocket.Server({ 
-    port: PORT,
-    // Aceitar conexões de qualquer origem
-    verifyClient: (info, cb) => {
-        cb(true);
-    }
+const app = express();
+const PORT = 3000;
+
+// Servidor HTTP simples
+app.get('/', (req, res) => {
+    res.send('🚀 Servidor de Streaming rodando!');
 });
 
-console.log('🚀 Servidor WebSocket rodando na porta ' + PORT);
-console.log('📡 Suporta wss:// (WebSocket Seguro)');
+const server = app.listen(PORT, () => {
+    console.log(`✅ Servidor HTTP rodando na porta ${PORT}`);
+});
+
+// WebSocket Server
+const wss = new WebSocket.Server({ 
+    server: server,
+    path: '/' 
+});
+
+console.log('📡 WebSocket Server iniciado em wss://' + process.env.REPL_SLUG + '.' + process.env.REPL_OWNER + '.repl.co');
 
 const rooms = new Map();
 
-wss.on('connection', (ws, request) => {
-    console.log('📱 Cliente conectado via ' + (request.connection.encrypted ? 'WSS' : 'WS'));
+wss.on('connection', (ws, req) => {
+    console.log('📱 Cliente conectado');
     ws.isAlive = true;
     ws.roomCode = null;
     ws.role = null;
@@ -173,7 +181,7 @@ wss.on('connection', (ws, request) => {
     });
 });
 
-// Ping para manter conexões ativas
+// Heartbeat
 setInterval(() => {
     wss.clients.forEach(ws => {
         if (!ws.isAlive) {
@@ -186,4 +194,4 @@ setInterval(() => {
 }, 30000);
 
 console.log('📊 Salas ativas: 0');
-console.log('✅ Servidor pronto para conexões WSS!');
+console.log('✅ Servidor pronto!');
