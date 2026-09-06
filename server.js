@@ -1,25 +1,33 @@
 const WebSocket = require('ws');
-const express = require('express');
-const app = express();
-const port = 3000;
 
-// Servidor WebSocket
-const wss = new WebSocket.Server({ port: 8080 });
+// Railway define a porta automaticamente
+const PORT = process.env.PORT || 8080;
+const wss = new WebSocket.Server({ 
+    port: PORT,
+    // Aceitar conexões de qualquer origem
+    verifyClient: (info, cb) => {
+        cb(true);
+    }
+});
 
-console.log('🚀 Servidor WebSocket rodando na porta 8080');
+console.log('🚀 Servidor WebSocket rodando na porta ' + PORT);
+console.log('📡 Suporta wss:// (WebSocket Seguro)');
 
 const rooms = new Map();
 
-wss.on('connection', (ws) => {
-    console.log('📱 Cliente conectado');
+wss.on('connection', (ws, request) => {
+    console.log('📱 Cliente conectado via ' + (request.connection.encrypted ? 'WSS' : 'WS'));
     ws.isAlive = true;
     ws.roomCode = null;
     ws.role = null;
 
-    ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('pong', () => {
+        ws.isAlive = true;
+    });
 
     ws.on('message', (message) => {
         try {
+            // Dados binários = vídeo
             if (Buffer.isBuffer(message)) {
                 const roomCode = ws.roomCode;
                 if (roomCode && rooms.has(roomCode)) {
@@ -33,6 +41,7 @@ wss.on('connection', (ws) => {
                 return;
             }
 
+            // Mensagens JSON
             const data = JSON.parse(message.toString());
             const type = data.type;
             const room = data.room;
@@ -49,11 +58,13 @@ wss.on('connection', (ws) => {
                 console.log(`📡 Broadcaster na sala ${room}`);
                 
                 roomData.viewers.forEach(viewer => {
-                    viewer.send(JSON.stringify({
-                        type: 'broadcaster_ready',
-                        device: data.device || 'Unknown',
-                        battery: data.battery || '100%'
-                    }));
+                    if (viewer.readyState === WebSocket.OPEN) {
+                        viewer.send(JSON.stringify({
+                            type: 'broadcaster_ready',
+                            device: data.device || 'Unknown',
+                            battery: data.battery || '100%'
+                        }));
+                    }
                 });
 
             } else if (type === 'viewer') {
@@ -90,11 +101,33 @@ wss.on('connection', (ws) => {
                             startX: data.startX,
                             startY: data.startY,
                             endX: data.endX,
-                            endY: data.endY
+                            endY: data.endY,
+                            value: data.value
                         }));
                         console.log(`🎮 Comando ${data.action} enviado`);
                     }
                 }
+
+            } else if (type === 'status') {
+                const roomCode = ws.roomCode;
+                if (roomCode && rooms.has(roomCode)) {
+                    const roomData = rooms.get(roomCode);
+                    roomData.viewers.forEach(viewer => {
+                        if (viewer !== ws && viewer.readyState === WebSocket.OPEN) {
+                            viewer.send(JSON.stringify({
+                                type: 'status',
+                                battery: data.battery,
+                                timestamp: data.timestamp
+                            }));
+                        }
+                    });
+                }
+
+            } else if (type === 'ping') {
+                ws.send(JSON.stringify({
+                    type: 'pong',
+                    timestamp: Date.now()
+                }));
             }
         } catch (e) {
             console.error('❌ Erro:', e);
@@ -105,13 +138,21 @@ wss.on('connection', (ws) => {
         const roomCode = ws.roomCode;
         if (roomCode && rooms.has(roomCode)) {
             const roomData = rooms.get(roomCode);
+            
             if (ws.role === 'broadcaster') {
                 roomData.broadcaster = null;
+                console.log(`📡 Broadcaster saiu da sala ${roomCode}`);
                 roomData.viewers.forEach(viewer => {
-                    viewer.send(JSON.stringify({ type: 'broadcaster_disconnected' }));
+                    if (viewer.readyState === WebSocket.OPEN) {
+                        viewer.send(JSON.stringify({
+                            type: 'broadcaster_disconnected'
+                        }));
+                    }
                 });
+
             } else if (ws.role === 'viewer') {
                 roomData.viewers = roomData.viewers.filter(v => v !== ws);
+                console.log(`👁️ Viewer saiu da sala ${roomCode}`);
                 if (roomData.broadcaster && roomData.broadcaster.readyState === WebSocket.OPEN) {
                     roomData.broadcaster.send(JSON.stringify({
                         type: 'viewer_connected',
@@ -119,19 +160,17 @@ wss.on('connection', (ws) => {
                     }));
                 }
             }
+            
             if (!roomData.broadcaster && roomData.viewers.length === 0) {
                 rooms.delete(roomCode);
+                console.log(`🧹 Sala ${roomCode} removida`);
             }
         }
     });
-});
 
-// Servidor HTTP para health check
-app.get('/', (req, res) => res.send('Servidor de Streaming 🚀'));
-app.get('/health', (req, res) => res.send('OK'));
-
-app.listen(port, () => {
-    console.log(`🌐 Servidor HTTP rodando em http://localhost:${port}`);
+    ws.on('error', (error) => {
+        console.error('❌ Erro no WebSocket:', error);
+    });
 });
 
 // Ping para manter conexões ativas
@@ -145,3 +184,6 @@ setInterval(() => {
         ws.ping();
     });
 }, 30000);
+
+console.log('📊 Salas ativas: 0');
+console.log('✅ Servidor pronto para conexões WSS!');
