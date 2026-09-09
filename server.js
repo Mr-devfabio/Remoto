@@ -1,7 +1,6 @@
 const express = require('express');
 const WebSocket = require('ws');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,15 +10,14 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Servir arquivos estáticos (opcional)
-app.use(express.static('public'));
-
 // ============================================
 // ROTAS HTTP
 // ============================================
 
-// Rota principal
 app.get('/', (req, res) => {
+    const host = req.get('host');
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    
     res.send(`
         <!DOCTYPE html>
         <html>
@@ -44,7 +42,7 @@ app.get('/', (req, res) => {
                 h1 { font-size: 48px; margin-bottom: 10px; }
                 .status { color: #4ade80; font-size: 20px; }
                 .info { margin: 20px 0; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 10px; }
-                code { background: rgba(0,0,0,0.5); padding: 5px 10px; border-radius: 5px; }
+                code { background: rgba(0,0,0,0.5); padding: 5px 10px; border-radius: 5px; word-break: break-all; }
                 .endpoints { text-align: left; margin: 20px 0; }
                 .endpoints li { margin: 10px 0; list-style: none; }
                 .badge {
@@ -57,6 +55,15 @@ app.get('/', (req, res) => {
                 .badge-success { background: #22c55e; color: white; }
                 .badge-info { background: #3b82f6; color: white; }
                 .badge-warning { background: #eab308; color: white; }
+                .url-box {
+                    background: rgba(0,0,0,0.5);
+                    padding: 15px;
+                    border-radius: 10px;
+                    margin: 15px 0;
+                    border: 2px solid #4ade80;
+                }
+                .url-box .label { font-size: 12px; opacity: 0.7; }
+                .url-box .url { font-size: 18px; font-weight: bold; }
             </style>
         </head>
         <body>
@@ -64,9 +71,14 @@ app.get('/', (req, res) => {
                 <h1>📡 Screen Stream Server</h1>
                 <p class="status">✅ Servidor rodando com sucesso!</p>
                 
+                <div class="url-box">
+                    <div class="label">📱 USE ESTA URL NO APP:</div>
+                    <div class="url">${host}</div>
+                </div>
+                
                 <div class="info">
-                    <p>🔗 <strong>WebSocket:</strong> <code>wss://${req.get('host')}/ws</code></p>
-                    <p>🌐 <strong>URL:</strong> <code>https://${req.get('host')}</code></p>
+                    <p>🔗 <strong>WebSocket:</strong> <code>${protocol}://${host}/ws</code></p>
+                    <p>🌐 <strong>URL:</strong> <code>${protocol}://${host}</code></p>
                 </div>
                 
                 <div class="endpoints">
@@ -93,14 +105,12 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Rota de status
 app.get('/status', (req, res) => {
     const roomStats = {};
     for (const [room, data] of rooms) {
         roomStats[room] = {
             hasBroadcaster: data.broadcaster !== null,
-            viewers: data.viewers.length,
-            viewerIds: data.viewers.map(v => v.id || 'unknown')
+            viewers: data.viewers.length
         };
     }
     
@@ -112,47 +122,25 @@ app.get('/status', (req, res) => {
         totalConnections: connections,
         timestamp: new Date().toISOString(),
         memory: process.memoryUsage(),
-        nodeVersion: process.version
+        nodeVersion: process.version,
+        url: req.get('host')
     });
 });
 
-// Rota de informações
 app.get('/info', (req, res) => {
     res.json({
         service: 'Screen Stream Server',
         version: '1.0.0',
         websocket: '/ws',
-        protocols: ['ws', 'wss'],
-        maxMessageSize: '50mb',
+        url: req.get('host'),
+        protocol: req.headers['x-forwarded-proto'] || 'https',
         features: [
             'Transmissão de tela em tempo real',
             'Controle remoto (toque, swipe, botões)',
             'Suporte a múltiplas salas',
             'Reconexão automática',
             'Status da bateria do emissor'
-        ],
-        endpoints: {
-            http: {
-                '/': 'Página inicial',
-                '/status': 'Status do servidor',
-                '/info': 'Informações detalhadas'
-            },
-            websocket: {
-                '/ws': 'Conexão WebSocket principal'
-            }
-        },
-        example: {
-            connect: 'wss://' + req.get('host') + '/ws',
-            registerBroadcaster: {
-                type: 'broadcaster',
-                room: '1234',
-                device: 'Samsung S23'
-            },
-            registerViewer: {
-                type: 'viewer',
-                room: '1234'
-            }
-        }
+        ]
     });
 });
 
@@ -160,12 +148,10 @@ app.get('/info', (req, res) => {
 // WEBSOCKET SERVER
 // ============================================
 
-// Armazenar salas e conexões
 const rooms = new Map();
 let connections = 0;
 let connectionId = 0;
 
-// Criar servidor HTTP
 const server = app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log('🚀 SERVIDOR INICIADO COM SUCESSO!');
@@ -177,16 +163,11 @@ const server = app.listen(PORT, () => {
     console.log('✅ Aguardando conexões...');
 });
 
-// Criar WebSocket Server
 const wss = new WebSocket.Server({ 
     server,
     path: '/ws',
-    perMessageDeflate: false // Desativar compressão para melhor performance
+    perMessageDeflate: false
 });
-
-// ============================================
-// EVENTOS DO WEBSOCKET
-// ============================================
 
 wss.on('connection', (ws, req) => {
     connections++;
@@ -200,7 +181,6 @@ wss.on('connection', (ws, req) => {
     let clientType = null;
     let clientInfo = {};
 
-    // Enviar boas-vindas
     ws.send(JSON.stringify({
         type: 'welcome',
         message: 'Conectado ao servidor!',
@@ -208,10 +188,6 @@ wss.on('connection', (ws, req) => {
         timestamp: new Date().toISOString()
     }));
 
-    // ============================================
-    // MENSAGENS RECEBIDAS
-    // ============================================
-    
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
@@ -219,9 +195,7 @@ wss.on('connection', (ws, req) => {
             
             console.log(`📩 [${ws.id}] ${clientType || 'unknown'}: ${msgType}`);
             
-            // --------------------------------------------
-            // 1. REGISTRAR BROADCASTER (EMISSOR)
-            // --------------------------------------------
+            // REGISTRAR BROADCASTER
             if (msgType === 'broadcaster') {
                 const room = data.room;
                 clientRoom = room;
@@ -238,9 +212,7 @@ wss.on('connection', (ws, req) => {
                 
                 const roomData = rooms.get(room);
                 
-                // Se já existe um broadcaster, desconectar o antigo
                 if (roomData.broadcaster) {
-                    console.log(`⚠️ [${ws.id}] Broadcaster já existe na sala ${room}, substituindo...`);
                     try {
                         roomData.broadcaster.send(JSON.stringify({
                             type: 'broadcaster_replaced',
@@ -253,7 +225,6 @@ wss.on('connection', (ws, req) => {
                 roomData.broadcaster = ws;
                 roomData.info = clientInfo;
                 
-                // Confirmar registro
                 ws.send(JSON.stringify({
                     type: 'registered',
                     role: 'broadcaster',
@@ -264,15 +235,11 @@ wss.on('connection', (ws, req) => {
                 }));
                 
                 console.log(`📡 [${ws.id}] Broadcaster registrado na sala: ${room}`);
-                
-                // Notificar viewers
                 broadcastViewerCount(room);
                 notifyViewersOfBroadcaster(room);
             }
             
-            // --------------------------------------------
-            // 2. REGISTRAR VIEWER (ESPECTADOR)
-            // --------------------------------------------
+            // REGISTRAR VIEWER
             else if (msgType === 'viewer') {
                 const room = data.room;
                 clientRoom = room;
@@ -289,7 +256,6 @@ wss.on('connection', (ws, req) => {
                 const roomData = rooms.get(room);
                 roomData.viewers.push(ws);
                 
-                // Confirmar registro
                 ws.send(JSON.stringify({
                     type: 'registered',
                     role: 'viewer',
@@ -301,7 +267,6 @@ wss.on('connection', (ws, req) => {
                 
                 console.log(`👤 [${ws.id}] Viewer registrado na sala: ${room}`);
                 
-                // Informar se há broadcaster
                 if (roomData.broadcaster) {
                     ws.send(JSON.stringify({
                         type: 'broadcaster_ready',
@@ -314,9 +279,7 @@ wss.on('connection', (ws, req) => {
                 broadcastViewerCount(room);
             }
             
-            // --------------------------------------------
-            // 3. FRAME DE VÍDEO (Broadcaster → Viewers)
-            // --------------------------------------------
+            // FRAME DE VÍDEO
             else if (msgType === 'frame') {
                 if (clientType === 'broadcaster' && clientRoom) {
                     const roomData = rooms.get(clientRoom);
@@ -324,43 +287,27 @@ wss.on('connection', (ws, req) => {
                         const frameData = {
                             type: 'frame',
                             data: data.data,
-                            timestamp: data.timestamp || new Date().toISOString(),
-                            frameId: data.frameId || Date.now()
+                            timestamp: data.timestamp || new Date().toISOString()
                         };
                         
-                        // Enviar para todos os viewers
                         let sentCount = 0;
                         roomData.viewers.forEach((viewer) => {
                             if (viewer.readyState === WebSocket.OPEN) {
                                 try {
                                     viewer.send(JSON.stringify(frameData));
                                     sentCount++;
-                                } catch (e) {
-                                    console.error(`❌ Erro ao enviar frame para viewer:`, e);
-                                }
+                                } catch (e) {}
                             }
                         });
-                        
-                        // Atualizar qualidade do broadcaster
-                        if (sentCount > 0) {
-                            ws.send(JSON.stringify({
-                                type: 'frame_ack',
-                                sentTo: sentCount,
-                                timestamp: new Date().toISOString()
-                            }));
-                        }
                     }
                 }
             }
             
-            // --------------------------------------------
-            // 4. STATUS DO BROADCASTER
-            // --------------------------------------------
+            // STATUS
             else if (msgType === 'status') {
                 if (clientType === 'broadcaster' && clientRoom) {
                     const roomData = rooms.get(clientRoom);
                     if (roomData) {
-                        // Atualizar info
                         if (data.battery) {
                             roomData.info.battery = data.battery;
                         }
@@ -371,7 +318,6 @@ wss.on('connection', (ws, req) => {
                             timestamp: data.timestamp || new Date().toISOString()
                         };
                         
-                        // Enviar para viewers
                         roomData.viewers.forEach((viewer) => {
                             if (viewer.readyState === WebSocket.OPEN) {
                                 try {
@@ -383,40 +329,24 @@ wss.on('connection', (ws, req) => {
                 }
             }
             
-            // --------------------------------------------
-            // 5. CONTROLE (Viewer → Broadcaster)
-            // --------------------------------------------
+            // CONTROLE
             else if (msgType === 'control') {
                 if (clientType === 'viewer' && clientRoom) {
                     const roomData = rooms.get(clientRoom);
                     if (roomData && roomData.broadcaster) {
                         if (roomData.broadcaster.readyState === WebSocket.OPEN) {
-                            const controlData = {
+                            roomData.broadcaster.send(JSON.stringify({
                                 type: 'control_command',
                                 action: data.action,
                                 value: data.value || null,
                                 timestamp: new Date().toISOString()
-                            };
-                            
-                            roomData.broadcaster.send(JSON.stringify(controlData));
-                        } else {
-                            ws.send(JSON.stringify({
-                                type: 'error',
-                                message: 'Broadcaster offline'
                             }));
                         }
-                    } else {
-                        ws.send(JSON.stringify({
-                            type: 'error',
-                            message: 'Nenhum broadcaster na sala'
-                        }));
                     }
                 }
             }
             
-            // --------------------------------------------
-            // 6. PING / PONG
-            // --------------------------------------------
+            // PING
             else if (msgType === 'ping') {
                 ws.send(JSON.stringify({
                     type: 'pong',
@@ -424,29 +354,11 @@ wss.on('connection', (ws, req) => {
                 }));
             }
             
-            // --------------------------------------------
-            // 7. DESCONHECIDO
-            // --------------------------------------------
-            else {
-                ws.send(JSON.stringify({
-                    type: 'error',
-                    message: `Tipo de mensagem desconhecido: ${msgType}`
-                }));
-            }
-            
         } catch (error) {
             console.error(`❌ [${ws.id}] Erro ao processar mensagem:`, error);
-            ws.send(JSON.stringify({
-                type: 'error',
-                message: 'Erro ao processar mensagem'
-            }));
         }
     });
 
-    // ============================================
-    // DESCONEXÃO
-    // ============================================
-    
     ws.on('close', () => {
         connections--;
         console.log(`🔌 [${ws.id}] Cliente desconectou (${connections} conexões)`);
@@ -454,13 +366,11 @@ wss.on('connection', (ws, req) => {
         if (clientRoom) {
             const roomData = rooms.get(clientRoom);
             if (roomData) {
-                // Remover broadcaster
                 if (roomData.broadcaster === ws) {
                     roomData.broadcaster = null;
                     roomData.info = {};
-                    console.log(`📡 [${ws.id}] Broadcaster desconectou da sala: ${clientRoom}`);
+                    console.log(`📡 Broadcaster desconectou da sala: ${clientRoom}`);
                     
-                    // Notificar viewers
                     roomData.viewers.forEach((viewer) => {
                         if (viewer.readyState === WebSocket.OPEN) {
                             viewer.send(JSON.stringify({
@@ -471,14 +381,11 @@ wss.on('connection', (ws, req) => {
                     });
                 }
                 
-                // Remover viewer
                 const viewerIndex = roomData.viewers.indexOf(ws);
                 if (viewerIndex > -1) {
                     roomData.viewers.splice(viewerIndex, 1);
-                    console.log(`👤 [${ws.id}] Viewer desconectou da sala: ${clientRoom}`);
                 }
                 
-                // Se não tiver ninguém, remover sala
                 if (!roomData.broadcaster && roomData.viewers.length === 0) {
                     rooms.delete(clientRoom);
                     console.log(`🗑️ Sala ${clientRoom} removida`);
@@ -489,20 +396,12 @@ wss.on('connection', (ws, req) => {
         }
     });
 
-    // ============================================
-    // ERRO
-    // ============================================
-    
     ws.on('error', (error) => {
         console.error(`⚠️ [${ws.id}] Erro no WebSocket:`, error);
     });
 });
 
-// ============================================
 // FUNÇÕES AUXILIARES
-// ============================================
-
-// Broadcast de contagem de viewers
 function broadcastViewerCount(room) {
     const roomData = rooms.get(room);
     if (roomData) {
@@ -513,27 +412,18 @@ function broadcastViewerCount(room) {
             timestamp: new Date().toISOString()
         });
         
-        // Enviar para o broadcaster
         if (roomData.broadcaster && roomData.broadcaster.readyState === WebSocket.OPEN) {
-            try {
-                roomData.broadcaster.send(message);
-            } catch (e) {}
+            try { roomData.broadcaster.send(message); } catch (e) {}
         }
         
-        // Enviar para todos os viewers
         roomData.viewers.forEach((viewer) => {
             if (viewer.readyState === WebSocket.OPEN) {
-                try {
-                    viewer.send(message);
-                } catch (e) {}
+                try { viewer.send(message); } catch (e) {}
             }
         });
-        
-        console.log(`👥 Sala ${room}: ${count} viewer(s)`);
     }
 }
 
-// Notificar viewers que um broadcaster entrou
 function notifyViewersOfBroadcaster(room) {
     const roomData = rooms.get(room);
     if (roomData && roomData.broadcaster) {
@@ -546,47 +436,11 @@ function notifyViewersOfBroadcaster(room) {
         
         roomData.viewers.forEach((viewer) => {
             if (viewer.readyState === WebSocket.OPEN) {
-                try {
-                    viewer.send(message);
-                } catch (e) {}
+                try { viewer.send(message); } catch (e) {}
             }
         });
     }
 }
-
-// ============================================
-// LIMPEZA PERIÓDICA
-// ============================================
-
-// Remover conexões mortas a cada 30 segundos
-setInterval(() => {
-    let cleaned = 0;
-    for (const [room, roomData] of rooms) {
-        // Remover viewers mortos
-        const aliveViewers = roomData.viewers.filter(v => v.readyState === WebSocket.OPEN);
-        if (aliveViewers.length !== roomData.viewers.length) {
-            cleaned += roomData.viewers.length - aliveViewers.length;
-            roomData.viewers = aliveViewers;
-        }
-        
-        // Remover broadcaster morto
-        if (roomData.broadcaster && roomData.broadcaster.readyState !== WebSocket.OPEN) {
-            roomData.broadcaster = null;
-            roomData.info = {};
-            console.log(`🧹 Broadcaster morto removido da sala ${room}`);
-        }
-        
-        // Remover sala vazia
-        if (!roomData.broadcaster && roomData.viewers.length === 0) {
-            rooms.delete(room);
-            console.log(`🧹 Sala ${room} removida (limpeza)`);
-        }
-    }
-    
-    if (cleaned > 0) {
-        console.log(`🧹 ${cleaned} conexões mortas removidas`);
-    }
-}, 30000);
 
 console.log('='.repeat(50));
 console.log('✅ Servidor pronto para receber conexões!');
