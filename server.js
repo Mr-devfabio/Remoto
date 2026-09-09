@@ -1,197 +1,245 @@
-const WebSocket = require('ws');
 const express = require('express');
+const WebSocket = require('ws');
+const cors = require('cors');
+const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// Servidor HTTP simples
-app.get('/', (req, res) => {
-    res.send('🚀 Servidor de Streaming rodando!');
-});
+// Middleware
+app.use(cors());
+app.use(express.json());
 
+// Servir arquivos estáticos (opcional)
+app.use(express.static('public'));
+
+// Criar servidor HTTP
 const server = app.listen(PORT, () => {
-    console.log(`✅ Servidor HTTP rodando na porta ${PORT}`);
+    console.log(`✅ Servidor rodando na porta ${PORT}`);
+    console.log(`🌐 URL: https://diligent-connection.up.railway.app`);
 });
 
-// WebSocket Server
+// Criar WebSocket Server
 const wss = new WebSocket.Server({ 
-    server: server,
-    path: '/' 
+    server,
+    path: '/ws' // Importante: mesmo caminho que o app tenta conectar
 });
 
-console.log('📡 WebSocket Server iniciado em wss://' + process.env.REPL_SLUG + '.' + process.env.REPL_OWNER + '.repl.co');
-
+// Armazenar salas
 const rooms = new Map();
 
 wss.on('connection', (ws, req) => {
-    console.log('📱 Cliente conectado');
-    ws.isAlive = true;
-    ws.roomCode = null;
-    ws.role = null;
-
-    ws.on('pong', () => {
-        ws.isAlive = true;
-    });
+    console.log('🔗 Novo cliente conectado');
+    
+    let clientRoom = null;
+    let clientType = null;
+    let clientId = Date.now().toString();
 
     ws.on('message', (message) => {
         try {
-            // Dados binários = vídeo
-            if (Buffer.isBuffer(message)) {
-                const roomCode = ws.roomCode;
-                if (roomCode && rooms.has(roomCode)) {
-                    const room = rooms.get(roomCode);
-                    room.viewers.forEach(viewer => {
-                        if (viewer !== ws && viewer.readyState === WebSocket.OPEN) {
-                            viewer.send(message);
-                        }
-                    });
-                }
-                return;
-            }
-
-            // Mensagens JSON
-            const data = JSON.parse(message.toString());
-            const type = data.type;
-            const room = data.room;
-
-            if (type === 'broadcaster') {
+            const data = JSON.parse(message);
+            
+            // Registrar broadcaster
+            if (data.type === 'broadcaster') {
+                const room = data.room;
+                clientRoom = room;
+                clientType = 'broadcaster';
+                
                 if (!rooms.has(room)) {
                     rooms.set(room, { broadcaster: null, viewers: [] });
                 }
+                
                 const roomData = rooms.get(room);
                 roomData.broadcaster = ws;
-                ws.roomCode = room;
-                ws.role = 'broadcaster';
                 
-                console.log(`📡 Broadcaster na sala ${room}`);
+                // Enviar confirmação
+                ws.send(JSON.stringify({
+                    type: 'registered',
+                    role: 'broadcaster',
+                    room: room,
+                    message: '✅ Transmissor registrado com sucesso!'
+                }));
                 
-                roomData.viewers.forEach(viewer => {
-                    if (viewer.readyState === WebSocket.OPEN) {
-                        viewer.send(JSON.stringify({
-                            type: 'broadcaster_ready',
-                            device: data.device || 'Unknown',
-                            battery: data.battery || '100%'
-                        }));
-                    }
-                });
-
-            } else if (type === 'viewer') {
+                console.log(`📡 Broadcaster registrado na sala: ${room}`);
+                broadcastViewerCount(room);
+            }
+            
+            // Registrar viewer
+            else if (data.type === 'viewer') {
+                const room = data.room;
+                clientRoom = room;
+                clientType = 'viewer';
+                
                 if (!rooms.has(room)) {
                     rooms.set(room, { broadcaster: null, viewers: [] });
                 }
+                
                 const roomData = rooms.get(room);
                 roomData.viewers.push(ws);
-                ws.roomCode = room;
-                ws.role = 'viewer';
                 
-                console.log(`👁️ Viewer na sala ${room}`);
+                ws.send(JSON.stringify({
+                    type: 'registered',
+                    role: 'viewer',
+                    room: room,
+                    message: '✅ Espectador conectado!'
+                }));
                 
-                if (roomData.broadcaster && roomData.broadcaster.readyState === WebSocket.OPEN) {
-                    roomData.broadcaster.send(JSON.stringify({
-                        type: 'viewer_connected',
-                        count: roomData.viewers.length
-                    }));
-                }
-
-            } else if (type === 'control') {
-                const roomCode = ws.roomCode;
-                if (roomCode && rooms.has(roomCode)) {
-                    const roomData = rooms.get(roomCode);
-                    const broadcaster = roomData.broadcaster;
-                    
-                    if (broadcaster && broadcaster.readyState === WebSocket.OPEN) {
-                        broadcaster.send(JSON.stringify({
-                            type: 'control_command',
-                            action: data.action,
-                            x: data.x,
-                            y: data.y,
-                            text: data.text,
-                            startX: data.startX,
-                            startY: data.startY,
-                            endX: data.endX,
-                            endY: data.endY,
-                            value: data.value
-                        }));
-                        console.log(`🎮 Comando ${data.action} enviado`);
+                console.log(`👤 Viewer conectado na sala: ${room}`);
+                broadcastViewerCount(room);
+            }
+            
+            // Frame de vídeo
+            else if (data.type === 'frame') {
+                if (clientType === 'broadcaster' && clientRoom) {
+                    const roomData = rooms.get(clientRoom);
+                    if (roomData) {
+                        // Enviar frame para todos os viewers
+                        roomData.viewers.forEach((viewer) => {
+                            if (viewer.readyState === WebSocket.OPEN) {
+                                viewer.send(JSON.stringify({
+                                    type: 'frame',
+                                    data: data.data,
+                                    timestamp: data.timestamp
+                                }));
+                            }
+                        });
                     }
                 }
-
-            } else if (type === 'status') {
-                const roomCode = ws.roomCode;
-                if (roomCode && rooms.has(roomCode)) {
-                    const roomData = rooms.get(roomCode);
-                    roomData.viewers.forEach(viewer => {
-                        if (viewer !== ws && viewer.readyState === WebSocket.OPEN) {
-                            viewer.send(JSON.stringify({
-                                type: 'status',
-                                battery: data.battery,
-                                timestamp: data.timestamp
+            }
+            
+            // Status do broadcaster
+            else if (data.type === 'status') {
+                if (clientType === 'broadcaster' && clientRoom) {
+                    const roomData = rooms.get(clientRoom);
+                    if (roomData) {
+                        roomData.viewers.forEach((viewer) => {
+                            if (viewer.readyState === WebSocket.OPEN) {
+                                viewer.send(JSON.stringify({
+                                    type: 'status',
+                                    battery: data.battery,
+                                    timestamp: data.timestamp
+                                }));
+                            }
+                        });
+                    }
+                }
+            }
+            
+            // Controle do viewer
+            else if (data.type === 'control') {
+                if (clientType === 'viewer' && clientRoom) {
+                    const roomData = rooms.get(clientRoom);
+                    if (roomData && roomData.broadcaster) {
+                        if (roomData.broadcaster.readyState === WebSocket.OPEN) {
+                            roomData.broadcaster.send(JSON.stringify({
+                                type: 'control_command',
+                                action: data.action,
+                                value: data.value || null
                             }));
                         }
-                    });
+                    }
                 }
-
-            } else if (type === 'ping') {
-                ws.send(JSON.stringify({
-                    type: 'pong',
-                    timestamp: Date.now()
-                }));
             }
-        } catch (e) {
-            console.error('❌ Erro:', e);
+            
+            // Ping/Pong
+            else if (data.type === 'ping') {
+                ws.send(JSON.stringify({ type: 'pong' }));
+            }
+            
+        } catch (error) {
+            console.error('❌ Erro ao processar mensagem:', error);
         }
     });
 
     ws.on('close', () => {
-        const roomCode = ws.roomCode;
-        if (roomCode && rooms.has(roomCode)) {
-            const roomData = rooms.get(roomCode);
-            
-            if (ws.role === 'broadcaster') {
-                roomData.broadcaster = null;
-                console.log(`📡 Broadcaster saiu da sala ${roomCode}`);
-                roomData.viewers.forEach(viewer => {
-                    if (viewer.readyState === WebSocket.OPEN) {
-                        viewer.send(JSON.stringify({
-                            type: 'broadcaster_disconnected'
-                        }));
-                    }
-                });
-
-            } else if (ws.role === 'viewer') {
-                roomData.viewers = roomData.viewers.filter(v => v !== ws);
-                console.log(`👁️ Viewer saiu da sala ${roomCode}`);
-                if (roomData.broadcaster && roomData.broadcaster.readyState === WebSocket.OPEN) {
-                    roomData.broadcaster.send(JSON.stringify({
-                        type: 'viewer_connected',
-                        count: roomData.viewers.length
-                    }));
+        console.log('🔌 Cliente desconectado');
+        
+        if (clientRoom) {
+            const roomData = rooms.get(clientRoom);
+            if (roomData) {
+                // Remover broadcaster
+                if (roomData.broadcaster === ws) {
+                    roomData.broadcaster = null;
+                    console.log(`📡 Broadcaster desconectou da sala: ${clientRoom}`);
                 }
-            }
-            
-            if (!roomData.broadcaster && roomData.viewers.length === 0) {
-                rooms.delete(roomCode);
-                console.log(`🧹 Sala ${roomCode} removida`);
+                
+                // Remover viewer
+                const viewerIndex = roomData.viewers.indexOf(ws);
+                if (viewerIndex > -1) {
+                    roomData.viewers.splice(viewerIndex, 1);
+                    console.log(`👤 Viewer desconectou da sala: ${clientRoom}`);
+                }
+                
+                // Se não tiver ninguém, remover sala
+                if (!roomData.broadcaster && roomData.viewers.length === 0) {
+                    rooms.delete(clientRoom);
+                    console.log(`🗑️ Sala ${clientRoom} removida`);
+                }
+                
+                broadcastViewerCount(clientRoom);
             }
         }
     });
 
     ws.on('error', (error) => {
-        console.error('❌ Erro no WebSocket:', error);
+        console.error('⚠️ Erro no WebSocket:', error);
     });
 });
 
-// Heartbeat
-setInterval(() => {
-    wss.clients.forEach(ws => {
-        if (!ws.isAlive) {
-            console.log('⏰ Cliente inativo');
-            return ws.terminate();
+// Função para broadcast de contagem de viewers
+function broadcastViewerCount(room) {
+    const roomData = rooms.get(room);
+    if (roomData) {
+        const count = roomData.viewers.length;
+        const message = JSON.stringify({
+            type: 'viewer_connected',
+            count: count
+        });
+        
+        // Enviar para o broadcaster
+        if (roomData.broadcaster && roomData.broadcaster.readyState === WebSocket.OPEN) {
+            roomData.broadcaster.send(message);
         }
-        ws.isAlive = false;
-        ws.ping();
-    });
-}, 30000);
+        
+        // Enviar para todos os viewers
+        roomData.viewers.forEach((viewer) => {
+            if (viewer.readyState === WebSocket.OPEN) {
+                viewer.send(message);
+            }
+        });
+    }
+}
 
-console.log('📊 Salas ativas: 0');
-console.log('✅ Servidor pronto!');
+// Rota de status
+app.get('/status', (req, res) => {
+    const roomStats = {};
+    for (const [room, data] of rooms) {
+        roomStats[room] = {
+            hasBroadcaster: data.broadcaster !== null,
+            viewers: data.viewers.length
+        };
+    }
+    
+    res.json({
+        status: 'online',
+        totalRooms: rooms.size,
+        rooms: roomStats,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Rota principal
+app.get('/', (req, res) => {
+    res.json({
+        service: 'Screen Stream Server',
+        status: 'running',
+        websocket: '/ws',
+        documentation: 'https://github.com/seu-app',
+        endpoints: {
+            websocket: 'wss://diligent-connection.up.railway.app/ws',
+            status: '/status'
+        }
+    });
+});
+
+console.log('🚀 Servidor iniciado com sucesso!');
