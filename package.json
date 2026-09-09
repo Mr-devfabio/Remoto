@@ -1,17 +1,13 @@
 {
   "name": "screen-stream-server",
   "version": "1.0.0",
-  "description": "Servidor para transmissão de tela Android",
+  "description": "Servidor para transmissão de tela",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "ws": "^8.14.2",
-    "cors": "^2.8.5"
-  },
-  "engines": {
-    "node": "18.x"
+    "ws": "^8.14.2"
   }
 }
